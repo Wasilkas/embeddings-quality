@@ -1,0 +1,2 @@
+include PLAN.md
+recursive-include examples *.py
