@@ -222,6 +222,20 @@ CLI настраивает sinks для консольного запуска; �
 При `metric="cosine", normalize=False` геометрия остаётся cosine, а линейный
 probe использует ненормализованные векторы.
 
+Доступны расстояния `cosine`, `euclidean` и `manhattan`. Manhattan (L1) — сумма
+абсолютных разностей координат: `sum(abs(x_j - y_j))`. Выбранное расстояние
+используется в геометрии (purity, silhouette, margins) и kNN probe.
+Для `euclidean` и `manhattan` L2-нормализация по умолчанию отключена;
+её можно включить через `normalize=True` или CLI-флаг `--normalize`.
+
+```python
+report = evaluate_embeddings(embeddings, labels, config=AuditConfig(metric="manhattan"))
+```
+
+```bash
+embeddings-quality simclr.npz --output reports/simclr --metric manhattan
+```
+
 Для объекта i:
 
 ```text

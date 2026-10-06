@@ -27,7 +27,7 @@ def main(argv: list[str] | None = None) -> int:
         help="CSV columns to treat as categories, including numeric IDs",
     )
     parser.add_argument("--ks", nargs="+", type=int, default=[5, 10, 20, 50])
-    parser.add_argument("--metric", choices=["cosine", "euclidean"], default="cosine")
+    parser.add_argument("--metric", choices=["cosine", "euclidean", "manhattan"], default="cosine")
     normalization = parser.add_mutually_exclusive_group()
     normalization.add_argument("--normalize", dest="normalize", action="store_true")
     normalization.add_argument("--no-normalize", dest="normalize", action="store_false")

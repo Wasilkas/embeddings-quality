@@ -22,7 +22,7 @@ from .report import EmbeddingQualityReport
 class AuditConfig:
     ks: tuple[int, ...] = (5, 10, 20, 50)
     metric: str = "cosine"
-    normalize: bool | None = None  # auto: cosine=True, euclidean=False
+    normalize: bool | None = None  # auto: cosine=True, euclidean/manhattan=False
     margin_k: int = 5
     cv_folds: int = 5
     probe_k: int = 10
@@ -33,8 +33,8 @@ class AuditConfig:
     exclude_same_group: bool = True
 
     def __post_init__(self) -> None:
-        if self.metric not in ("cosine", "euclidean"):
-            raise ValueError("metric must be 'cosine' or 'euclidean'.")
+        if self.metric not in ("cosine", "euclidean", "manhattan"):
+            raise ValueError("metric must be 'cosine', 'euclidean', or 'manhattan'.")
         if not self.ks or len(set(self.ks)) != len(self.ks):
             raise ValueError("ks must be a nonempty sequence of distinct positive integers.")
         for name, value in [("k", k) for k in self.ks] + [

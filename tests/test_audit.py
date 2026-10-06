@@ -34,15 +34,26 @@ def test_separated_original_dimensions(separated):
     np.testing.assert_allclose(report.pairwise_auc.to_numpy()[~np.eye(3, dtype=bool)], 1)
 
 
-@pytest.mark.parametrize("metric", ["cosine", "euclidean"])
-def test_geometry_matches_reference(metric):
+@pytest.mark.parametrize(
+    "metric,normalize_vectors",
+    [("cosine", None), ("euclidean", None), ("manhattan", None), ("manhattan", True)],
+)
+def test_geometry_matches_reference(metric, normalize_vectors):
     rng = np.random.default_rng(10)
     X = rng.normal(size=(16, 7))
     X[1] = X[0]  # duplicates: never count the anchor as its own neighbor
     y = np.array([0] * 7 + [1] * 8 + [2])
-    config = AuditConfig(ks=(1, 3), metric=metric, margin_k=3, working_memory_mb=0.001)
+    config = AuditConfig(
+        ks=(1, 3),
+        metric=metric,
+        normalize=normalize_vectors,
+        margin_k=3,
+        working_memory_mb=0.001,
+    )
     report = evaluate_embeddings(X, y, config=config)
-    reference_X = normalize(X) if metric == "cosine" else X
+    normalized = metric == "cosine" if normalize_vectors is None else normalize_vectors
+    assert report.summary["preprocessing"]["l2_normalized"] is normalized
+    reference_X = normalize(X) if normalized else X
     np.testing.assert_allclose(
         report.samples.silhouette, silhouette_samples(reference_X, y, metric=metric), atol=1e-12
     )
@@ -60,6 +71,52 @@ def test_geometry_matches_reference(metric):
             assert np.isnan(report.samples.loc[i, "margin"])
         baseline = (np.sum(y == y[i]) - 1) / (len(y) - 1)
         assert report.samples.loc[i, "neighbor_baseline"] == pytest.approx(baseline)
+
+
+def test_manhattan_knn_oof_and_cli(tmp_path):
+    rng = np.random.default_rng(71)
+    X = rng.normal(size=(30, 4))
+    X[0] = 0  # L1 accepts zero vectors when normalization is disabled.
+    y = np.tile([0, 1], 15)
+    config = AuditConfig(metric="manhattan", ks=(1,), probe_k=1, cv_folds=3)
+    report = evaluate_embeddings(X, y, config=config)
+    splits, reason = make_splits(y, None, config)
+    assert reason is None
+    correct_by_class = {label: [] for label in np.unique(y)}
+    for train, test in splits:
+        distances = np.abs(X[test, None, :] - X[None, train, :]).sum(axis=2)
+        predicted = y[train[distances.argmin(axis=1)]]
+        for label in correct_by_class:
+            correct_by_class[label].extend((predicted[y[test] == label] == label).tolist())
+    expected = np.mean([np.mean(correct) for correct in correct_by_class.values()])
+    assert report.summary["linear_probe"]["oof"]["knn"]["balanced_accuracy"] == pytest.approx(
+        expected
+    )
+    np.savez(tmp_path / "data.npz", embeddings=X, labels=y)
+    assert (
+        main(
+            [
+                str(tmp_path / "data.npz"),
+                "--output",
+                str(tmp_path / "report"),
+                "--metric",
+                "manhattan",
+                "--ks",
+                "1",
+                "--probe-k",
+                "1",
+                "--cv-folds",
+                "3",
+                "--log-level",
+                "WARNING",
+            ]
+        )
+        == 0
+    )
+    saved = json.loads((tmp_path / "report" / "summary.json").read_text())
+    assert saved["config"]["metric"] == "manhattan"
+    assert saved["preprocessing"]["l2_normalized"] is False
+    assert saved["linear_probe"]["oof"]["knn"]["balanced_accuracy"] == pytest.approx(expected)
 
 
 def test_group_neighborhood_baselines_and_no_leakage(separated):
