@@ -3,10 +3,14 @@
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 import numpy as np
 import pandas as pd
+from loguru import logger
+
+from ._logging import log_stage
 
 
 def _json_value(value: Any) -> Any:
@@ -44,6 +48,8 @@ class EmbeddingQualityReport:
     def save(self, directory: str | Path, *, plots: bool = False) -> Path:
         """Write JSON, CSVs, interpretation notes, optionally an SVG heatmap."""
         directory = Path(directory)
+        started = perf_counter()
+        logger.info("Saving report to {}: started (plots={})", directory, plots)
         # Check optional dependency before writing any artifacts.
         if plots:
             try:
@@ -63,10 +69,15 @@ class EmbeddingQualityReport:
             ("linear_confusion", self.confusion, True),
             ("review_queue", self.review_queue(), False),
         ):
+            logger.debug("Saving {}.csv ({} rows)", name, len(table))
             table.to_csv(directory / f"{name}.csv", index=indexed)
         (directory / "REPORT.md").write_text(self._markdown(), encoding="utf-8")
         if plots:
-            self._heatmap(directory / "pairwise_separability.svg")
+            with log_stage(logger, "Rendering pairwise separability SVG"):
+                self._heatmap(directory / "pairwise_separability.svg")
+        logger.info(
+            "Saving report to {}: completed in {:.2f}s", directory, perf_counter() - started
+        )
         return directory
 
     def _markdown(self) -> str:

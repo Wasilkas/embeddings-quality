@@ -5,7 +5,9 @@ import sys
 
 import numpy as np
 import pandas as pd
+from loguru import logger
 
+from ._logging import cli_logging, log_stage
 from .audit import AuditConfig, evaluate_embeddings
 
 
@@ -41,9 +43,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--plots", action="store_true", help="Export SVG heatmap (requires [plots])"
     )
+    parser.add_argument(
+        "--log-level",
+        type=str.upper,
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        default="INFO",
+        help="Progress logging level on stderr (default: INFO)",
+    )
     args = parser.parse_args(argv)
+    with cli_logging(args.log_level):
+        return _run(args, parser)
+
+
+def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     try:
-        with np.load(args.input, allow_pickle=False) as data:
+        with (
+            log_stage(logger, f"Loading NPZ: {args.input}"),
+            np.load(args.input, allow_pickle=False) as data,
+        ):
             if "embeddings" not in data or "labels" not in data:
                 raise ValueError("NPZ must contain embeddings and labels arrays.")
             X, labels = data["embeddings"], data["labels"]
@@ -55,7 +72,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.metadata:
             if ids is None:
                 raise ValueError("Metadata CSV requires sample_ids in NPZ.")
-            frame = pd.read_csv(args.metadata, dtype={"sample_id": str})
+            with log_stage(logger, f"Loading metadata CSV: {args.metadata}"):
+                frame = pd.read_csv(args.metadata, dtype={"sample_id": str})
             if (
                 "sample_id" not in frame
                 or frame.sample_id.isna().any()
@@ -71,6 +89,7 @@ def main(argv: list[str] | None = None) -> int:
                     raise ValueError(f"Categorical metadata column {column!r} is missing.")
                 frame[column] = frame[column].astype("string")
             metadata = frame.loc[string_ids].to_dict("list")
+            logger.info("Metadata aligned: {} columns, {} samples", len(metadata), len(string_ids))
         config = AuditConfig(
             ks=tuple(args.ks),
             metric=args.metric,

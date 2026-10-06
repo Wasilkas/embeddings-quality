@@ -1,11 +1,15 @@
 """Exact geometry with bounded distance-matrix memory."""
 
+from time import perf_counter
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
+from loguru import logger
 from numpy.typing import NDArray
 from sklearn.metrics import pairwise_distances_chunked
+
+from ._logging import log_stage
 
 if TYPE_CHECKING:
     from .audit import AuditConfig
@@ -35,11 +39,40 @@ def geometry(
     )
     by_class = [np.flatnonzero(y == c) for c in range(n_classes)]
     start = 0
-    for distances in pairwise_distances_chunked(
+    started = last_logged = perf_counter()
+    logger.info(
+        "Geometry: computing exact distances for {} samples; metric={}, working_memory={:.1f} MiB",
+        n,
+        config.metric,
+        config.working_memory_mb,
+    )
+    chunks = pairwise_distances_chunked(
         X, metric=config.metric, working_memory=config.working_memory_mb
-    ):
+    )
+    while start < n:
+        with log_stage(
+            logger,
+            f"Geometry: distance block starting at row {start + 1}/{n}",
+            level="DEBUG",
+        ):
+            distances = next(chunks)
+        if start == 0:
+            logger.info(
+                "Geometry: first distance block ready ({} rows); computing neighborhood metrics",
+                len(distances),
+            )
         for row, original_distances in enumerate(distances):
             i = start + row
+            now = perf_counter()
+            if now - last_logged >= 5:
+                logger.info(
+                    "Geometry progress: {}/{} samples ({:.1f}%), elapsed {:.2f}s",
+                    i,
+                    n,
+                    100 * i / n,
+                    now - started,
+                )
+                last_logged = now
             # Silhouette uses all samples, and excludes only the anchor itself.
             original_distances[i] = 0.0
             if n_classes < n and counts[y[i]] > 1:
@@ -84,6 +117,12 @@ def geometry(
             values["margin"][i] = values["d_negative"][i] - values["d_positive"][i]
         start += len(distances)
 
+    logger.info(
+        "Geometry progress: {}/{} samples (100.0%), elapsed {:.2f}s; aggregating class metrics",
+        n,
+        n,
+        perf_counter() - started,
+    )
     samples = pd.DataFrame(values)
     records = []
     columns = (
@@ -92,6 +131,7 @@ def geometry(
         + ["silhouette", "margin"]
     )
     for c, label in enumerate(classes):
+        logger.debug("Geometry aggregation: class {}/{} ({})", c + 1, n_classes, label)
         subset = samples.loc[y == c]
         record: dict[str, Any] = {
             "label": label,

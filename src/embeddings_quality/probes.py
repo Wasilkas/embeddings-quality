@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
+from loguru import logger
 from numpy.typing import ArrayLike, NDArray
 from sklearn.dummy import DummyClassifier, DummyRegressor
 from sklearn.ensemble import RandomForestRegressor
@@ -20,6 +21,8 @@ from sklearn.metrics import (
 )
 from sklearn.model_selection import StratifiedGroupKFold, StratifiedKFold
 from sklearn.neighbors import KNeighborsClassifier
+
+from ._logging import log_stage
 
 if TYPE_CHECKING:
     from .audit import AuditConfig
@@ -96,21 +99,30 @@ def linear_probe(
 ) -> tuple[dict[str, Any], NDArray[np.intp] | None, NDArray[np.float64] | None, Splits | None]:
     splits, reason = make_splits(y, groups, config)
     if splits is None:
+        logger.info("OOF probes skipped: {}", reason)
         return {"status": "skipped", "reason": reason}, None, None, None
+    logger.info(
+        "OOF probes: {} folds, {} CV",
+        len(splits),
+        "group-aware" if groups is not None else "stratified",
+    )
     n_classes = len(np.unique(y))
     probabilities = np.zeros((len(y), n_classes))
     predictions = {name: np.empty(len(y), dtype=int) for name in ("linear", "knn", "dummy")}
     fold_scores = []
     for fold, (train, test) in enumerate(splits):
-        model = fit_linear(X[train], y[train], config, notices)
-        probabilities[test] = model.predict_proba(X[test])
-        predictions["linear"][test] = model.predict(X[test])
-        knn = KNeighborsClassifier(
-            n_neighbors=min(config.probe_k, len(train)),
-            metric=config.metric,
-            algorithm="brute",
-        ).fit(X[train], y[train])
-        predictions["knn"][test] = knn.predict(X[test])
+        context = f"OOF fold {fold + 1}/{len(splits)} (train={len(train)}, test={len(test)})"
+        with log_stage(logger, f"{context}: linear fit and prediction"):
+            model = fit_linear(X[train], y[train], config, notices)
+            probabilities[test] = model.predict_proba(X[test])
+            predictions["linear"][test] = model.predict(X[test])
+        with log_stage(logger, f"{context}: kNN fit and prediction"):
+            knn = KNeighborsClassifier(
+                n_neighbors=min(config.probe_k, len(train)),
+                metric=config.metric,
+                algorithm="brute",
+            ).fit(X[train], y[train])
+            predictions["knn"][test] = knn.predict(X[test])
         dummy = DummyClassifier(strategy="prior").fit(X[train], y[train])
         predictions["dummy"][test] = dummy.predict(X[test])
         scores: dict[str, Any] = {
@@ -122,6 +134,7 @@ def linear_probe(
         for name, pred in predictions.items():
             scores[name] = classification_scores(y[test], pred[test])
         fold_scores.append(scores)
+        logger.debug("{}: scores={}", context, scores)
     summary = {
         "status": "ok",
         "splitter": "stratified_group" if groups is not None else "stratified",
@@ -142,9 +155,16 @@ def pairwise_probes(
 ) -> tuple[pd.DataFrame, pd.DataFrame, list[dict[str, Any]]]:
     auc = pd.DataFrame(np.nan, index=classes, columns=classes)
     accuracy = auc.copy()
-    records = []
+    records: list[dict[str, Any]] = []
+    total_pairs = len(classes) * (len(classes) - 1) // 2
+    logger.info("Pairwise probes: {} class pairs", total_pairs)
     for left in range(len(classes)):
         for right in range(left + 1, len(classes)):
+            context = (
+                f"Pair {len(records) + 1}/{total_pairs}: "
+                f"{str(classes[left])!r} vs {str(classes[right])!r}"
+            )
+            logger.info("{}: preparing CV", context)
             selected = (y == left) | (y == right)
             binary_y = (y[selected] == right).astype(int)
             pair_X = X[selected]
@@ -153,22 +173,26 @@ def pairwise_probes(
             record: dict[str, Any] = {"class_a": classes[left], "class_b": classes[right]}
             if splits is None:
                 record.update(status="skipped", reason=reason)
+                logger.info("{}: skipped ({})", context, reason)
             else:
                 scores = []
-                for train, test in splits:
-                    model = fit_linear(pair_X[train], binary_y[train], config, notices)
-                    scores.append(
-                        {
-                            "roc_auc": float(
-                                roc_auc_score(
-                                    binary_y[test], model.predict_proba(pair_X[test])[:, 1]
-                                )
-                            ),
-                            "balanced_accuracy": float(
-                                balanced_accuracy_score(binary_y[test], model.predict(pair_X[test]))
-                            ),
-                        }
-                    )
+                for fold, (train, test) in enumerate(splits, start=1):
+                    with log_stage(logger, f"{context}, fold {fold}/{len(splits)}"):
+                        model = fit_linear(pair_X[train], binary_y[train], config, notices)
+                        scores.append(
+                            {
+                                "roc_auc": float(
+                                    roc_auc_score(
+                                        binary_y[test], model.predict_proba(pair_X[test])[:, 1]
+                                    )
+                                ),
+                                "balanced_accuracy": float(
+                                    balanced_accuracy_score(
+                                        binary_y[test], model.predict(pair_X[test])
+                                    )
+                                ),
+                            }
+                        )
                 record.update(status="ok", n_folds=len(splits), folds=scores)
                 for key in ("roc_auc", "balanced_accuracy"):
                     values = [s[key] for s in scores]
@@ -178,6 +202,12 @@ def pairwise_probes(
                 accuracy.iloc[left, right] = accuracy.iloc[right, left] = record[
                     "balanced_accuracy"
                 ]
+                logger.info(
+                    "{}: completed, mean ROC-AUC={:.4f}, balanced accuracy={:.4f}",
+                    context,
+                    record["roc_auc"],
+                    record["balanced_accuracy"],
+                )
             records.append(record)
     return auc, accuracy, records
 
@@ -191,31 +221,39 @@ def nuisance_probes(
     notices: list[str],
 ) -> dict[str, Any]:
     results: dict[str, Any] = {}
-    for name, column in metadata.items():
+    if not metadata:
+        logger.info("Nuisance probes skipped: no metadata supplied")
+    for column_index, (name, column) in enumerate(metadata.items(), start=1):
+        context = f"Metadata {column_index}/{len(metadata)}: {name!r}"
+        logger.info("{}: validating target", context)
         values = np.asarray(column)
         if values.ndim != 1 or len(values) != len(X):
             raise ValueError(f"Metadata {name!r} must have shape (n_samples,).")
         if pd.isna(values).any():
             results[name] = {"status": "skipped", "reason": "Missing metadata values."}
+            logger.info("{}: skipped ({})", context, results[name]["reason"])
             continue
         numeric = pd.api.types.is_numeric_dtype(values.dtype) and values.dtype.kind != "b"
         if numeric:
             if not np.isfinite(values).all() or np.unique(values).size < 2:
                 results[name] = {"status": "skipped", "reason": "Nonfinite or constant target."}
+                logger.info("{}: skipped ({})", context, results[name]["reason"])
                 continue
             if main_splits is None:
                 results[name] = {"status": "skipped", "reason": "Main CV is infeasible."}
+                logger.info("{}: skipped ({})", context, results[name]["reason"])
                 continue
             predictions, baseline = np.empty(len(X)), np.empty(len(X))
             scores = []
-            for train, test in main_splits:
-                model = RandomForestRegressor(
-                    n_estimators=100,
-                    min_samples_leaf=2,
-                    n_jobs=1,
-                    random_state=config.random_state,
-                ).fit(X[train], values[train])
-                predictions[test] = model.predict(X[test])
+            for fold, (train, test) in enumerate(main_splits, start=1):
+                with log_stage(logger, f"{context}, regression fold {fold}/{len(main_splits)}"):
+                    model = RandomForestRegressor(
+                        n_estimators=100,
+                        min_samples_leaf=2,
+                        n_jobs=1,
+                        random_state=config.random_state,
+                    ).fit(X[train], values[train])
+                    predictions[test] = model.predict(X[test])
                 dummy = DummyRegressor().fit(X[train], values[train])
                 baseline[test] = dummy.predict(X[test])
                 scores.append(
@@ -239,7 +277,10 @@ def nuisance_probes(
             _, target = np.unique(values.astype(str), return_inverse=True)
             if len(np.unique(target)) < 2:
                 results[name] = {"status": "skipped", "reason": "Constant target."}
+                logger.info("{}: skipped ({})", context, results[name]["reason"])
                 continue
-            result, _, _, _ = linear_probe(X, target, groups, config, notices)
+            with log_stage(logger, f"{context}: classification"):
+                result, _, _, _ = linear_probe(X, target, groups, config, notices)
             results[name] = {"kind": "classification", **result}
+        logger.info("{}: {}", context, results[name]["status"])
     return results

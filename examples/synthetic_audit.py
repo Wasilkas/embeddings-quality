@@ -1,9 +1,11 @@
 """Smoke demo: 512-dimensional features, known separation vs shuffled labels."""
 
 import argparse
+import sys
 from pathlib import Path
 
 import numpy as np
+from loguru import logger
 
 from embeddings_quality import AuditConfig, evaluate_embeddings
 
@@ -12,6 +14,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, default=Path("reports/demo"))
     args = parser.parse_args()
+    logger.remove()
+    logger.add(sys.stderr, level="INFO", format="{time:HH:mm:ss} {level} {message}", diagnose=False)
+    logger.enable("embeddings_quality")
     rng = np.random.default_rng(42)
     labels = np.repeat(["scratch", "crack", "pitting"], 60)
     centers = np.eye(3, 512) * 8

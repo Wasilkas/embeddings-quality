@@ -147,7 +147,60 @@ MAE и baseline, предсказывающий среднее train). Стро�
 
 Настройки CLI: `--ks`, `--metric`, `--normalize`/`--no-normalize`,
 `--cv-folds`, `--margin-k`, `--probe-k`, `--linear-c`, `--max-iter`,
-`--seed`, `--working-memory-mb`, `--include-same-group-neighbors`.
+`--seed`, `--working-memory-mb`, `--include-same-group-neighbors`, `--log-level`.
+
+## Логи и прогресс анализа
+
+Логирование использует [Loguru](https://loguru.readthedocs.io/), который входит
+в зависимости пакета. CLI по умолчанию пишет INFO-логи в stderr: загрузка данных,
+подготовка входов, геометрия, OOF probes, пары классов, nuisance-столбцы
+и сохранение отчёта.
+В логах видны текущий fold/пара классов и время выполнения этапа. Во время
+обработки геометрии прогресс по объектам выводится примерно раз в 5 секунд
+и при завершении. DEBUG также показывает расчёт отдельных блоков расстояний
+и сохранение CSV-файлов.
+
+```bash
+embeddings-quality simclr.npz --output reports/simclr --log-level DEBUG
+embeddings-quality simclr.npz --output reports/simclr --log-level WARNING
+embeddings-quality simclr.npz --output reports/simclr 2>analysis.log
+```
+
+`WARNING` отключает сообщения о прогрессе. Итоговые сообщения CLI остаются
+в stdout; notices также выводятся в stderr.
+
+В Python API логи по умолчанию отключены. Включите их до начала анализа.
+Если Loguru ещё не настроен вашим приложением, настройте вывод в консоль:
+
+```python
+import sys
+
+from loguru import logger
+
+from embeddings_quality import evaluate_embeddings
+
+logger.remove()  # Заменяем стандартный sink Loguru своим.
+logger.add(
+    sys.stderr,
+    level="INFO",
+    format="{time:HH:mm:ss} {level} {message}",
+    diagnose=False,
+)
+logger.enable("embeddings_quality")
+
+# Далее обычный вызов evaluate_embeddings(...).
+```
+
+Если Loguru уже настроен вашим приложением или ноутбуком, достаточно
+`logger.enable("embeddings_quality")`; существующий sink должен допускать INFO.
+Python API не добавляет и не удаляет sinks. Отключение логов библиотеки:
+`logger.disable("embeddings_quality")`. Для записи в файл после настройки
+Loguru можно добавить `logger.add("analysis.log", level="INFO", diagnose=False)`.
+CLI настраивает sinks для консольного запуска; в приложении с собственной
+конфигурацией Loguru используйте Python API.
+Отдельный вызов scikit-learn (расчёт блока расстояний или обучение модели)
+может занять долгое время: внутри него обновлений прогресса нет, но в логах
+виден текущий этап; для блоков расстояний используйте DEBUG.
 
 ## Метрики
 

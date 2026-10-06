@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Audit SSL embedding separability in the original feature space"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["numpy>=1.24", "pandas>=2.0", "scikit-learn>=1.4,<2"]
+dependencies = ["numpy>=1.24", "pandas>=2.0", "scikit-learn>=1.4,<2", "loguru>=0.7,<1"]
 
 [project.optional-dependencies]
 plots = ["matplotlib>=3.7"]

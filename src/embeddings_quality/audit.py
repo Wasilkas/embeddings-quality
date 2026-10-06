@@ -3,13 +3,16 @@
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from numbers import Integral
+from time import perf_counter
 
 import numpy as np
 import pandas as pd
+from loguru import logger
 from numpy.typing import ArrayLike, NDArray
 from sklearn.metrics import confusion_matrix
 from sklearn.preprocessing import normalize
 
+from ._logging import log_stage
 from .geometry import geometry
 from .probes import linear_probe, nuisance_probes, pairwise_probes
 from .report import EmbeddingQualityReport
@@ -92,7 +95,12 @@ def evaluate_embeddings(
         Numeric targets use RF regression, string/category targets use linear
         classification. Cast numeric camera IDs to strings for classification.
     config : AuditConfig, optional
+
+    Progress is emitted at INFO through Loguru. Enable library logs with
+    ``loguru.logger.enable("embeddings_quality")`` in the calling application.
     """
+    started = perf_counter()
+    logger.info("Embedding analysis: started; validating inputs and preprocessing")
     config = config or AuditConfig()
     X = np.asarray(embeddings, dtype=np.float64)
     if X.ndim != 2 or min(X.shape) < 1 or len(X) < 2:
@@ -118,6 +126,17 @@ def evaluate_embeddings(
     if len(np.unique(ids)) != len(X):
         raise ValueError("sample_ids must be unique.")
     group_strings = None if groups is None else _strings(groups, len(X), "groups")
+    logger.info(
+        "Input ready: {} samples, {} dimensions, {} classes; metric={}, "
+        "L2 normalized={}, grouped CV={} ({:.2f}s)",
+        len(X),
+        X.shape[1],
+        len(classes),
+        config.metric,
+        normalized,
+        group_strings is not None,
+        perf_counter() - started,
+    )
     notices = []
     if groups is None:
         notices.append("No groups supplied: probe CV assumes independent samples.")
@@ -125,7 +144,8 @@ def evaluate_embeddings(
         notices.append(
             "Singleton classes: positive distances are undefined and some probes are skipped."
         )
-    samples, class_table = geometry(X, y, classes, counts, group_strings, config)
+    with log_stage(logger, "Stage 1/4: geometry (purity, silhouette, distance margins)"):
+        samples, class_table = geometry(X, y, classes, counts, group_strings, config)
     samples.insert(0, "sample_id", ids)
     samples.insert(1, "label", label_strings)
     if group_strings is not None:
@@ -138,7 +158,8 @@ def evaluate_embeddings(
             )
     if samples.silhouette.isna().all():
         notices.append("Silhouette is undefined when every sample is its own class.")
-    probe, predicted, probabilities, splits = linear_probe(X, y, group_strings, config, notices)
+    with log_stage(logger, "Stage 2/4: out-of-fold probes (linear, kNN, dummy)"):
+        probe, predicted, probabilities, splits = linear_probe(X, y, group_strings, config, notices)
     confusion = pd.DataFrame(np.nan, index=classes, columns=classes)
     if predicted is not None and probabilities is not None:
         samples["linear_oof_prediction"] = classes[predicted]
@@ -149,10 +170,14 @@ def evaluate_embeddings(
             str(c): float(np.mean(predicted[y == index] == index))
             for index, c in enumerate(classes)
         }
-    auc, balanced_accuracy, pairs = pairwise_probes(X, y, classes, group_strings, config, notices)
-    nuisance = nuisance_probes(
-        X, metadata if metadata is not None else {}, group_strings, splits, config, notices
-    )
+    with log_stage(logger, "Stage 3/4: pairwise class probes"):
+        auc, balanced_accuracy, pairs = pairwise_probes(
+            X, y, classes, group_strings, config, notices
+        )
+    with log_stage(logger, "Stage 4/4: nuisance metadata probes"):
+        nuisance = nuisance_probes(
+            X, metadata if metadata is not None else {}, group_strings, splits, config, notices
+        )
     summary = {
         "n_samples": len(X),
         "n_features": X.shape[1],
@@ -178,4 +203,8 @@ def evaluate_embeddings(
         "nuisance_probes": nuisance,
         "notices": list(dict.fromkeys(notices)),
     }
-    return EmbeddingQualityReport(summary, samples, class_table, auc, balanced_accuracy, confusion)
+    report = EmbeddingQualityReport(
+        summary, samples, class_table, auc, balanced_accuracy, confusion
+    )
+    logger.info("Embedding analysis: completed in {:.2f}s", perf_counter() - started)
+    return report
