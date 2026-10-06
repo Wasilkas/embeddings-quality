@@ -1,7 +1,7 @@
 # embeddings-quality
 
 Для извлечения DINOv3-эмбеддингов из исходных изображений и bbox доступен
-соседний пакет [dinov3-embedder](../dinov3-embedder/README.md). Его NPZ и CSV
+пакет [dinov3-embedder](https://github.com/Wasilkas/dinov3-embedder). Его NPZ и CSV
 метаданных совместимы с API и CLI этого пакета.
 
 Python-пакет для оценки разделимости классов в **исходном пространстве
@@ -11,13 +11,41 @@ Python-пакет для оценки разделимости классов в
 
 ## Установка
 
-Из папки `embeddings-quality`:
+Требуется Python 3.10+ и установленный Git. Создайте и активируйте окружение:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+```
+
+В Windows PowerShell для активации используйте `.venv\Scripts\Activate.ps1`.
+Если окружение уже создано, достаточно активировать его.
+
+Установите пакет напрямую из GitHub вместе с зависимостями для графиков:
+
+```bash
+python -m pip install "embeddings-quality[plots] @ git+https://github.com/Wasilkas/embeddings-quality.git@main"
+```
+
+Без графиков уберите `[plots]`; для разработки, включая Ruff и mypy,
+используйте `[dev,plots]`.
+
+При настроенном SSH-доступе к GitHub можно использовать:
+
+```bash
+python -m pip install "embeddings-quality[plots] @ git+ssh://git@github.com/Wasilkas/embeddings-quality.git@main"
+```
+
+`@main` выбирает ветку; для воспроизводимой установки замените `main` на тег
+или полный хеш коммита.
+
+Для разработки из локальной копии, находясь в папке `embeddings-quality`:
 
 ```bash
 python -m pip install -e '.[plots]'
 ```
 
-Без графиков достаточно `python -m pip install -e .`. Требуется Python 3.10+.
+Без графиков достаточно `python -m pip install -e .`.
 Пакет принимает готовые эмбеддинги и метки: запуск SSL-модели не требуется.
 
 ## Python API
